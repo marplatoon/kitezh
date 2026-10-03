@@ -12,7 +12,7 @@ import (
 func main() {
 	mode := flag.String("mode", "listen", "listen, dial или relay")
 	keyPath := flag.String("key", "node.key", "путь к файлу с приватным ключом")
-	relayAddr := flag.String("relayaddr", "", "только для dial: ip:порт релея, через который идти к конечному узлу")
+	relaysFile := flag.String("relays", "", "только для dial: файл со списком релеев цепочки (строка \"ip:порт ключ\" на релей, порядок = порядок хопов)")
 	addr := flag.String("addr", "", "ip:порт: для listen/relay адрес прослушивания (по умолчанию :9000), для dial адрес назначения")
 	targetKeyHex := flag.String("targetkey", "", "только для dial: публичный ключ цели (hex, строка 'Публичный ключ' у неё в логе); если ключ в хендшейке другой - рвём соединение")
 	allowStr := flag.String("allow", "", "только для relay: список целей через запятую (ip:порт,ip:порт), к которым релей вообще согласен подключаться; без флага релей открытый")
@@ -26,9 +26,18 @@ func main() {
 		return
 	}
 
-	if *relayAddr != "" && *mode != "dial" {
-		fmt.Println("-relayaddr работает только с -mode dial")
+	if *relaysFile != "" && *mode != "dial" {
+		fmt.Println("-relays работает только с -mode dial")
 		return
+	}
+	var hops []relayHop
+	if *relaysFile != "" {
+		h, hErr := parseRelaysFile(*relaysFile)
+		if hErr != nil {
+			fmt.Println("-relays:", hErr)
+			return
+		}
+		hops = h
 	}
 
 	if *allowStr != "" && *mode != "relay" {
@@ -92,8 +101,8 @@ func main() {
 	case "listen":
 		err = runServer(cs, staticKeypair, in, *addr)
 	case "dial":
-		if *relayAddr != "" {
-			err = runClientViaRelay(cs, staticKeypair, in, *relayAddr, *addr, targetKey)
+		if len(hops) > 0 {
+			err = runClientViaChain(cs, staticKeypair, in, hops, *addr, targetKey)
 		} else {
 			err = runClient(cs, staticKeypair, in, *addr, targetKey)
 		}

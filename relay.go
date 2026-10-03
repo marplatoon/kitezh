@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"net/netip"
@@ -169,48 +168,4 @@ func pipeToClient(from net.Conn, to peer, touch func()) error {
 			return err
 		}
 	}
-}
-
-// runClientViaRelay - режим dial с -relayaddr: идём к target через релей
-func runClientViaRelay(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, relayAddr, target string, targetKey []byte) error {
-	conn, err := dialUTLS(relayAddr)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	fmt.Println("Подключился к релею", relayAddr)
-
-	// хендшейк №1: клиент <-> релей, это линк. Ключ релея пока не закрепляем
-	// (nil): подмена релея сама по себе ничего не читает, цель защищена своим слоем
-	recv, send, err := handshakeClient(conn, cs, kp, nil)
-	if err != nil {
-		return err
-	}
-	p := peer{conn: conn, send: send, recv: recv}
-
-	if err := sendCmd(p, cmdConnect, []byte(target)); err != nil {
-		return err
-	}
-	typ, payload, err := recvCmd(p)
-	if err != nil {
-		return err
-	}
-	switch typ {
-	case cmdOK:
-		fmt.Println("Релей подключился к", target)
-	case cmdErr:
-		return fmt.Errorf("релей не смог подключиться: %s", payload)
-	default:
-		return fmt.Errorf("неожиданный ответ релея: %d", typ)
-	}
-
-	// хендшейк №2: клиент <-> цель, СКВОЗЬ релей. Тут ключ цели ЗАКРЕПЛЯЕМ:
-	// именно на этом слое релей мог бы влезть посередине и ответить вместо цели. Дальше все ключи с
-	// префиксом e2e - это ключи цели, релей их не знает
-	rc := newRelayConn(p)
-	e2eRecv, e2eSend, err := handshakeClient(rc, cs, kp, targetKey)
-	if err != nil {
-		return err
-	}
-	return runChat(rc, e2eSend, e2eRecv, in)
 }

@@ -6,9 +6,18 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/flynn/noise"
 )
+
+// connectTimeout - сколько даём клиенту на CONNECT после хендшейка.
+// Молчун иначе держал бы нам горутину и сокет вечно
+const connectTimeout = 10 * time.Second
+
+// relayIdleTimeout - сколько труба может молчать в обе стороны, прежде чем её закроют.
+// Keepalive в протоколе пока нет, так что тихий чат умрёт через это время
+const relayIdleTimeout = 5 * time.Minute
 
 // runRelay - слушаем и принимаем клиентов. cs и kp нужны только для хендшейка
 // клиент<->релей, его делает acceptLoop. С целью релей Noise больше не
@@ -33,6 +42,8 @@ func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip
 func handleRelayPeer(p peer, allow map[netip.AddrPort]bool) {
 	defer p.conn.Close()
 
+	// на CONNECT даём connectTimeout
+	p.conn.SetDeadline(time.Now().Add(connectTimeout))
 	typ, payload, err := recvCmd(p)
 	if err != nil {
 		fmt.Println("Релей: ошибка чтения команды:", err)
@@ -42,6 +53,9 @@ func handleRelayPeer(p peer, allow map[netip.AddrPort]bool) {
 		fmt.Println("Релей: ожидали CONNECT, пришло:", typ)
 		return
 	}
+	// CONNECT пришёл вовремя ну и поэтому снимаем дедлайн: дальше dial (у него свой таймаут),
+	// и этот дедлайн не должен его убить
+	p.conn.SetDeadline(time.Time{})
 	target := string(payload)
 	fmt.Println("Релей: просят подключиться к", target)
 
@@ -65,9 +79,19 @@ func handleRelayPeer(p peer, allow map[netip.AddrPort]bool) {
 	}
 	fmt.Println("Релей: соединение с", target, "установлено")
 
+	// touch двигает дедлайн на ообоих концах. Зовут обе горутины, поэтому
+	// активность в любую сторону держит трубу живой. SetDeadline действует и на
+	// уже заблокированный read/Write, так что новый срок подхватывается на лету
+	touch := func() {
+		d := time.Now().Add(relayIdleTimeout)
+		p.conn.SetDeadline(d)
+		out.SetDeadline(d)
+	}
+	touch()
+
 	errc := make(chan error, 2)
-	go func() { errc <- pipeToTarget(p, out) }()
-	go func() { errc <- pipeToClient(out, p) }()
+	go func() { errc <- pipeToTarget(p, out, touch) }()
+	go func() { errc <- pipeToClient(out, p, touch) }()
 
 	err = <-errc
 	fmt.Println("Релей: закрываем", target, "-", err)
@@ -109,7 +133,7 @@ func targetAllowed(allow map[netip.AddrPort]bool, target string) bool {
 // pipeToTarget: DATA от клиента -> достаём байты -> в цель как есть
 // вкратце это чужой Noise, внутри фреймы
 // со своим префиксом длины, релею туда лезть незачем
-func pipeToTarget(from peer, to net.Conn) error {
+func pipeToTarget(from peer, to net.Conn, touch func()) error {
 	for {
 		typ, payload, err := recvCmd(from)
 		if err != nil {
@@ -121,6 +145,7 @@ func pipeToTarget(from peer, to net.Conn) error {
 		if _, err := to.Write(payload); err != nil {
 			return err
 		}
+		touch()
 		// первые байты в hex - чисто чтобы глазами убедиться, что там каша, а не текст
 		fmt.Printf("Релей: клиент -> цель, %d байт, начало: %x\n", len(payload), payload[:min(len(payload), 16)])
 	}
@@ -129,7 +154,7 @@ func pipeToTarget(from peer, to net.Conn) error {
 // pipeToClient: что прочитали из цели -> заворачиваем в DATA -> клиенту.
 // Читаем поток кусками, не фреймами: где кончается сообщение, знает только
 // клиент, релей этого не видит и не должен
-func pipeToClient(from net.Conn, to peer) error {
+func pipeToClient(from net.Conn, to peer, touch func()) error {
 	buf := make([]byte, maxChunk)
 	for {
 		n, err := from.Read(buf)
@@ -137,6 +162,7 @@ func pipeToClient(from net.Conn, to peer) error {
 			if err := sendCmd(to, cmdData, buf[:n]); err != nil {
 				return err
 			}
+			touch()
 			fmt.Printf("Релей: цель -> клиент, %d байт, начало: %x\n", n, buf[:min(n, 16)])
 		}
 		if err != nil {

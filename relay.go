@@ -21,7 +21,7 @@ const relayIdleTimeout = 5 * time.Minute
 // runRelay - слушаем и принимаем клиентов. cs и kp нужны только для хендшейка
 // клиент<->релей, его делает acceptLoop. С целью релей Noise больше не
 // говорит вообще - см. handleRelayPeer
-func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip.AddrPort]bool) error {
+func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip.AddrPort]bool, onion bool) error {
 	ln, err := listenUTLS(addr)
 	if err != nil {
 		return err
@@ -29,7 +29,13 @@ func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip
 	defer ln.Close()
 	fmt.Println("Релей слушает на", addr)
 
-	acceptLoop(ln, cs, kp, func(p peer) { handleRelayPeer(p, allow) })
+	acceptLoop(ln, cs, kp, func(p peer) {
+		if onion {
+			handleCircuit(p, circuitCfg{cs: cs, kp: kp, allow: allow})
+			return
+		}
+		handleRelayPeer(p, allow)
+	})
 	return nil
 }
 

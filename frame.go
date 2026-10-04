@@ -18,6 +18,14 @@ const maxFrameSize = 65535
 // шифрования всё ещё поместится в один фрейм
 const maxPlaintext = maxFrameSize - aeadOverhead
 
+// ячейка: после хендшейка всё ходит кусками ровно cellSize байт
+const (
+	cellSize  = 1024                    // шифртекст на проводе
+	cellPlain = cellSize - aeadOverhead // открытая часть
+	cellHdr   = 3                       // тип (1) + длина данных (2)
+	cellCap   = cellPlain - cellHdr     // данных в одной ячейке
+)
+
 var errFrameTooLarge = errors.New("сообщение не влезает в один фрейм")
 
 // writeFrame пишет сообщение с 2-байтовым префиксом длины (big-endian).

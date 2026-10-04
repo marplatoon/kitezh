@@ -16,6 +16,7 @@ func main() {
 	addr := flag.String("addr", "", "ip:порт: для listen/relay адрес прослушивания (по умолчанию :9000), для dial адрес назначения")
 	targetKeyHex := flag.String("targetkey", "", "только для dial: публичный ключ цели (hex, строка 'Публичный ключ' у неё в логе); если ключ в хендшейке другой - рвём соединение")
 	allowStr := flag.String("allow", "", "только для relay: список целей через запятую (ip:порт,ip:порт), к которым релей вообще согласен подключаться; без флага релей открытый")
+	onion := flag.Bool("onion", false, "onion-цепочки: у relay, listen и dial (dial требует -relays и -targetkey)")
 	flag.Parse()
 
 	// режим проверяем ДО загрузки ключа: опечатка не должна создавать файл ключа
@@ -23,6 +24,11 @@ func main() {
 	case "listen", "dial", "relay":
 	default:
 		fmt.Println("Неправильный режим. Нужно 'listen', 'dial' или 'relay'.")
+		return
+	}
+
+	if *onion && *mode == "dial" && *relaysFile == "" {
+		fmt.Println("-onion в режиме dial требует -relays")
 		return
 	}
 
@@ -99,15 +105,21 @@ func main() {
 	in := newStdin()
 	switch *mode {
 	case "listen":
-		err = runServer(cs, staticKeypair, in, *addr)
+		if *onion {
+			err = runServerOnion(cs, staticKeypair, in, *addr)
+		} else {
+			err = runServer(cs, staticKeypair, in, *addr)
+		}
 	case "dial":
-		if len(hops) > 0 {
+		if *onion {
+			err = runClientOnion(cs, staticKeypair, in, hops, *addr, targetKey)
+		} else if len(hops) > 0 {
 			err = runClientViaChain(cs, staticKeypair, in, hops, *addr, targetKey)
 		} else {
 			err = runClient(cs, staticKeypair, in, *addr, targetKey)
 		}
 	case "relay":
-		err = runRelay(cs, staticKeypair, *addr, allow)
+		err = runRelay(cs, staticKeypair, *addr, allow, *onion)
 	}
 
 	if err != nil {

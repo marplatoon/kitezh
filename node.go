@@ -18,6 +18,7 @@ const handshakeTimeout = 5 * time.Second
 type peer struct {
 	conn       net.Conn
 	send, recv *noise.CipherState
+	secret     []byte // материал для ключей слоя (из хендшейка линка)
 }
 
 // runServer - режим чата: ждём первого пира, прошедшего хендшейк.
@@ -71,7 +72,7 @@ func serveConn(conn net.Conn, cs noise.CipherSuite, kp noise.DHKey, onPeer func(
 	// и случается внутри первого чтения, так что дедлайн покрывает и его
 	conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
-	recv, send, err := handshakeServer(conn, cs, kp)
+	recv, send, secret, err := handshakeServer(conn, cs, kp)
 	if err != nil {
 		fmt.Println("Хендшейк не прошёл (не наш протокол?):", err)
 		conn.Close()
@@ -80,7 +81,7 @@ func serveConn(conn net.Conn, cs noise.CipherSuite, kp noise.DHKey, onPeer func(
 	conn.SetDeadline(time.Time{}) // хендшейк наш - дальше дедлайн снимаем
 
 	// onPeer блокирующий: для релейки он живёт столько же, сколько пир
-	onPeer(peer{conn: conn, send: send, recv: recv})
+	onPeer(peer{conn: conn, send: send, recv: recv, secret: secret})
 }
 
 // runClient проводит соединение через handshake + chat. targetKey - закреплённый
@@ -93,7 +94,7 @@ func runClient(cs noise.CipherSuite, staticKeypair noise.DHKey, in *bufio.Reader
 	defer conn.Close()
 	fmt.Println("Подключился к", addr)
 
-	recv, send, err := handshakeClient(conn, cs, staticKeypair, targetKey)
+	recv, send, _, err := handshakeClient(conn, cs, staticKeypair, targetKey)
 	if err != nil {
 		return err
 	}

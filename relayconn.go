@@ -5,9 +5,9 @@ import (
 	"net"
 )
 
-// maxChunk - сколько байт можно запихнуть в один DATA: максимум открытого
-// текста минус 1 байт на тип команды
-const maxChunk = maxPlaintext - 1
+// maxChunk - сколько байт можно запихнуть в один DATA: столько,
+// сколько влезает в одну ячейку
+const maxChunk = cellCap
 
 // relayConn - net.Conn, который на самом деле ходит через релей. Снаружи
 // это обычное соединение, поэтому handshakeClient и runChat работают с ним
@@ -49,9 +49,8 @@ func (c *relayConn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-// Write режет на куски по maxChunk. Фрейм внутреннего Noise может быть
-// до 65537 байт (2 префикс + 65535), а в один DATA влезает чуть меньше
-// без нарезки sendCmd вернул бы errFrameTooLarge на длинных сообщениях
+// Write режет на куски по maxChunk: данные длиннее одной ячейки
+// иначе упали бы с errFrameTooLarge
 func (c *relayConn) Write(b []byte) (int, error) {
 	sent := 0
 	for len(b) > 0 {

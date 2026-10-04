@@ -103,7 +103,7 @@ func runClientViaChain(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, h
 	fmt.Println("Подключился к релею 1:", hops[0].addr)
 
 	// слой 1: клиент <-> первый релей, по настоящему сокету
-	recv, send, err := handshakeClient(conn, cs, kp, hops[0].key)
+	recv, send, _, err := handshakeClient(conn, cs, kp, hops[0].key)
 	if err != nil {
 		return fmt.Errorf("хендшейк с релеем 1: %w", err)
 	}
@@ -115,7 +115,7 @@ func runClientViaChain(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, h
 			return fmt.Errorf("релей %d -> релей %d: %w", i, i+1, err)
 		}
 		rc := newRelayConn(link)
-		recv, send, err = handshakeClient(rc, cs, kp, hops[i].key)
+		recv, send, _, err = handshakeClient(rc, cs, kp, hops[i].key)
 		if err != nil {
 			return fmt.Errorf("хендшейк с релеем %d: %w", i+1, err)
 		}
@@ -129,7 +129,7 @@ func runClientViaChain(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, h
 	}
 	fmt.Println("Последний релей подключился к", target)
 	rc := newRelayConn(link)
-	e2eRecv, e2eSend, err := handshakeClient(rc, cs, kp, targetKey)
+	e2eRecv, e2eSend, _, err := handshakeClient(rc, cs, kp, targetKey)
 	if err != nil {
 		return fmt.Errorf("хендшейк с целью: %w", err)
 	}

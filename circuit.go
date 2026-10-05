@@ -16,6 +16,7 @@ const (
 	rcExtended byte = 2 // ответ на EXTEND: msg2
 	rcData     byte = 3
 	rcError    byte = 4 // текст ошибки
+	rcDrop     byte = 5
 )
 
 // circuitCfg - что узлу нужно знать про себя
@@ -149,6 +150,8 @@ func (c *circuit) handle(cmd byte, data []byte) error {
 			return errors.New("DATA на промежуточном узле")
 		}
 		c.cfg.onData(c, data)
+		return nil
+	case rcDrop:
 		return nil
 	}
 	return fmt.Errorf("неизвестная команда %d", cmd)

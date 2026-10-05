@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"strings"
 	"time"
@@ -150,6 +151,10 @@ func runClientOnion(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops
 	return c.chat(in)
 }
 
+func keepGap() time.Duration {
+	return 20*time.Second + time.Duration(rand.Int63n(int64(20*time.Second)))
+}
+
 // chat: строки с stdin уходят DATA-ячейками последнему хопу (цели),
 // ответы цели печатаем
 func (c *clientCircuit) chat(in *bufio.Reader) error {
@@ -170,8 +175,15 @@ func (c *clientCircuit) chat(in *bufio.Reader) error {
 		}
 	}()
 
+	keep := time.NewTimer(keepGap())
+	defer keep.Stop()
+	showPrompt := true
+
 	for {
-		fmt.Print("Введите сообщение: ")
+		if showPrompt {
+			fmt.Print("Введите сообщение: ")
+		}
+		showPrompt = true
 		select {
 		case text := <-lines:
 			if len(text) > relCap {
@@ -181,6 +193,13 @@ func (c *clientCircuit) chat(in *bufio.Reader) error {
 			if err := c.sendTo(last, rcData, []byte(text)); err != nil {
 				return err
 			}
+			keep.Reset(keepGap())
+		case <-keep.C:
+			if err := c.sendTo(last, rcDrop, nil); err != nil {
+				return err
+			}
+			keep.Reset(keepGap())
+			showPrompt = false
 		case err := <-netDone:
 			return err
 		case err := <-inErr:

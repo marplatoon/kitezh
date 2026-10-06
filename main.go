@@ -16,7 +16,6 @@ func main() {
 	addr := flag.String("addr", "", "ip:порт: для listen/relay адрес прослушивания (по умолчанию :9000), для dial адрес назначения")
 	targetKeyHex := flag.String("targetkey", "", "только для dial: публичный ключ цели (hex, строка 'Публичный ключ' у неё в логе); если ключ в хендшейке другой - рвём соединение")
 	allowStr := flag.String("allow", "", "только для relay: список целей через запятую (ip:порт,ip:порт), к которым релей вообще согласен подключаться; без флага релей открытый")
-	onion := flag.Bool("onion", false, "onion-цепочки: у relay, listen и dial (dial требует -relays и -targetkey)")
 	flag.Parse()
 
 	// режим проверяем ДО загрузки ключа: опечатка не должна создавать файл ключа
@@ -27,8 +26,8 @@ func main() {
 		return
 	}
 
-	if *onion && *mode == "dial" && *relaysFile == "" {
-		fmt.Println("-onion в режиме dial требует -relays")
+	if *mode == "dial" && *relaysFile == "" {
+		fmt.Println("Режиму dial нужен -relays")
 		return
 	}
 
@@ -77,7 +76,8 @@ func main() {
 		targetKey = k
 	}
 	if *mode == "dial" && targetKey == nil {
-		fmt.Println("Внимание: -targetkey не задан, ключ цели не проверяется (через релей цель можно подменить)")
+		fmt.Println("Режиму dial нужен -targetkey")
+		return
 	}
 
 	if *addr == "" {
@@ -105,21 +105,11 @@ func main() {
 	in := newStdin()
 	switch *mode {
 	case "listen":
-		if *onion {
-			err = runServerOnion(cs, staticKeypair, in, *addr)
-		} else {
-			err = runServer(cs, staticKeypair, in, *addr)
-		}
+		err = runServer(cs, staticKeypair, in, *addr)
 	case "dial":
-		if *onion {
-			err = runClientOnion(cs, staticKeypair, in, hops, *addr, targetKey)
-		} else if len(hops) > 0 {
-			err = runClientViaChain(cs, staticKeypair, in, hops, *addr, targetKey)
-		} else {
-			err = runClient(cs, staticKeypair, in, *addr, targetKey)
-		}
+		err = runClient(cs, staticKeypair, in, hops, *addr, targetKey)
 	case "relay":
-		err = runRelay(cs, staticKeypair, *addr, allow, *onion)
+		err = runRelay(cs, staticKeypair, *addr, allow)
 	}
 
 	if err != nil {

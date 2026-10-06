@@ -10,15 +10,15 @@ import (
 	"github.com/flynn/noise"
 )
 
-// runServerOnion - режим listen -onion: цель сама последний хоп цепочки.
+// runServer - режим listen: цель сама последний хоп цепочки.
 // Чатимся с тем, чья цепочка первой прислала DATA; остальные игнорируем
-func runServerOnion(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, addr string) error {
+func runServer(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, addr string) error {
 	ln, err := listenUTLS(addr)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
-	fmt.Println("Слушаем на", addr, "(onion), ждём цепочку...")
+	fmt.Println("Слушаем на", addr, "ждём цепочку...")
 
 	var active atomic.Pointer[circuit]
 	done := make(chan struct{})

@@ -8,11 +8,6 @@ import (
 
 // тип команды - первый байт внутри зашифрованной ячейки
 const (
-	cmdConnect byte = 1 // адрес назначения "ip:порт"
-	cmdOK      byte = 2
-	cmdErr     byte = 3 // текст ошибки
-	cmdData    byte = 4 // данные
-
 	cmdCreate     byte = 5 // msg1 хендшейка хопа
 	cmdCreated    byte = 6 // msg2 (для CREATE_FAST пусто)
 	cmdCreateFast byte = 7 // ключи хопа берём из самого линка

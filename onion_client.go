@@ -89,7 +89,7 @@ func (c *clientCircuit) extend(cs noise.CipherSuite, addr string, key []byte) er
 // Закрыть соединение (c.link.conn) должен вызывающий
 func buildCircuit(cs noise.CipherSuite, kp noise.DHKey, hops []relayHop, target string, targetKey []byte) (*clientCircuit, error) {
 	if targetKey == nil {
-		return nil, errors.New("в onion-режиме нужен -targetkey (ключ цели закрепляется в хендшейке хопа)")
+		return nil, errors.New("нужен -targetkey (ключ цели закрепляется в хендшейке хопа)")
 	}
 	conn, err := dialUTLS(hops[0].addr)
 	if err != nil {
@@ -141,8 +141,8 @@ func openCircuit(cs noise.CipherSuite, kp noise.DHKey, conn net.Conn, hops []rel
 	return c, nil
 }
 
-// runClientOnion - режим dial -onion: строим цепочку и болтаем с целью
-func runClientOnion(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops []relayHop, target string, targetKey []byte) error {
+// runClient - режим dial: строим цепочку и болтаем с целью
+func runClient(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops []relayHop, target string, targetKey []byte) error {
 	c, err := buildCircuit(cs, kp, hops, target, targetKey)
 	if err != nil {
 		return err

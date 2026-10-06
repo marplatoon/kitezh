@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"strings"
 	"time"
@@ -14,14 +13,13 @@ import (
 // Молчун иначе держал бы нам горутину и сокет вечно
 const connectTimeout = 10 * time.Second
 
-// relayIdleTimeout - сколько труба может молчать в обе стороны, прежде чем её закроют.
-// Keepalive в протоколе пока нет, так что тихий чат умрёт через это время
+// relayIdleTimeout - сколько цепочка может молчать, прежде чем релей её закроет.
+// Клиент в onion-режиме шлёт keepalive раз в 20-40с, так что живой чат не умирает
 const relayIdleTimeout = 5 * time.Minute
 
-// runRelay - слушаем и принимаем клиентов. cs и kp нужны только для хендшейка
-// клиент<->релей, его делает acceptLoop. С целью релей Noise больше не
-// говорит вообще - см. handleRelayPeer
-func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip.AddrPort]bool, onion bool) error {
+// runRelay - слушаем и принимаем клиентов. Хендшейк с линком делает acceptLoop,
+// дальше пира ведёт handleCircuit
+func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip.AddrPort]bool) error {
 	ln, err := listenUTLS(addr)
 	if err != nil {
 		return err
@@ -30,77 +28,9 @@ func runRelay(cs noise.CipherSuite, kp noise.DHKey, addr string, allow map[netip
 	fmt.Println("Релей слушает на", addr)
 
 	acceptLoop(ln, cs, kp, func(p peer) {
-		if onion {
-			handleCircuit(p, circuitCfg{cs: cs, kp: kp, allow: allow})
-			return
-		}
-		handleRelayPeer(p, allow)
+		handleCircuit(p, circuitCfg{cs: cs, kp: kp, allow: allow})
 	})
 	return nil
-}
-
-// handleRelayPeer: ждём CONNECT, открываем только TLS до цели и дальше просто
-// гоним байты туда-сюда. Раньше релей сам делал Noise с целью и
-// перешифровывал всё - то есть видел весь плейнтекст, чего мы и не хотели.
-// Теперь Noise клиент<->цель едет внутри DATA как обычные байты, и
-// расшифровать их релей не может - у него нет тех ключей
-func handleRelayPeer(p peer, allow map[netip.AddrPort]bool) {
-	defer p.conn.Close()
-
-	// на CONNECT даём connectTimeout
-	p.conn.SetDeadline(time.Now().Add(connectTimeout))
-	typ, payload, err := recvCmd(p)
-	if err != nil {
-		fmt.Println("Релей: ошибка чтения команды:", err)
-		return
-	}
-	if typ != cmdConnect {
-		fmt.Println("Релей: ожидали CONNECT, пришло:", typ)
-		return
-	}
-	// CONNECT пришёл вовремя ну и поэтому снимаем дедлайн: дальше dial (у него свой таймаут),
-	// и этот дедлайн не должен его убить
-	p.conn.SetDeadline(time.Time{})
-	target := string(payload)
-	fmt.Println("Релей: просят подключиться к", target)
-
-	// allow == nil - список не задан, релей открытый (main.go про это предупредил).
-	// Иначе пускаем только точное совпадение ip:port из списка
-	if allow != nil && !targetAllowed(allow, target) {
-		fmt.Println("Релей: цель не в allow-list, отказ:", target)
-		sendCmd(p, cmdErr, []byte("цель не разрешена"))
-		return
-	}
-
-	out, err := dialUTLS(target)
-	if err != nil {
-		sendCmd(p, cmdErr, []byte(err.Error()))
-		return
-	}
-	defer out.Close()
-
-	if err := sendCmd(p, cmdOK, nil); err != nil {
-		return
-	}
-	fmt.Println("Релей: соединение с", target, "установлено")
-
-	// touch двигает дедлайн на ообоих концах. Зовут обе горутины, поэтому
-	// активность в любую сторону держит трубу живой. SetDeadline действует и на
-	// уже заблокированный read/Write, так что новый срок подхватывается на лету
-	touch := func() {
-		d := time.Now().Add(relayIdleTimeout)
-		p.conn.SetDeadline(d)
-		out.SetDeadline(d)
-	}
-	touch()
-
-	errc := make(chan error, 2)
-	go func() { errc <- pipeToTarget(p, out, touch) }()
-	go func() { errc <- pipeToClient(out, p, touch) }()
-
-	err = <-errc
-	fmt.Println("Релей: закрываем", target, "-", err)
-	// deferы закроют оба соединения, и вторая горутина по итогу вылетит с ошибкой чтения
 }
 
 // parseAllowList разбирает строку "ip:port,ip:port" из флага -allow.
@@ -133,45 +63,4 @@ func targetAllowed(allow map[netip.AddrPort]bool, target string) bool {
 		return false
 	}
 	return allow[netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())]
-}
-
-// pipeToTarget: DATA от клиента -> достаём байты -> в цель как есть
-// вкратце это чужой Noise, внутри фреймы
-// со своим префиксом длины, релею туда лезть незачем
-func pipeToTarget(from peer, to net.Conn, touch func()) error {
-	for {
-		typ, payload, err := recvCmd(from)
-		if err != nil {
-			return err
-		}
-		if typ != cmdData {
-			return fmt.Errorf("неожиданная команда %d", typ)
-		}
-		if _, err := to.Write(payload); err != nil {
-			return err
-		}
-		touch()
-		// первые байты в hex - чисто чтобы глазами убедиться, что там каша, а не текст
-		fmt.Printf("Релей: клиент -> цель, %d байт, начало: %x\n", len(payload), payload[:min(len(payload), 16)])
-	}
-}
-
-// pipeToClient: что прочитали из цели -> заворачиваем в DATA -> клиенту.
-// Читаем поток кусками, не фреймами: где кончается сообщение, знает только
-// клиент, релей этого не видит и не должен
-func pipeToClient(from net.Conn, to peer, touch func()) error {
-	buf := make([]byte, maxChunk)
-	for {
-		n, err := from.Read(buf)
-		if n > 0 {
-			if err := sendCmd(to, cmdData, buf[:n]); err != nil {
-				return err
-			}
-			touch()
-			fmt.Printf("Релей: цель -> клиент, %d байт, начало: %x\n", n, buf[:min(n, 16)])
-		}
-		if err != nil {
-			return err
-		}
-	}
 }

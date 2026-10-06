@@ -14,10 +14,6 @@ const aeadOverhead = 16
 // maxFrameSize - предел 2-байтового префикса длины
 const maxFrameSize = 65535
 
-// maxPlaintext - самое длинное открытое сообщение, которое после
-// шифрования всё ещё поместится в один фрейм
-const maxPlaintext = maxFrameSize - aeadOverhead
-
 // ячейка: после хендшейка всё ходит кусками ровно cellSize байт
 const (
 	cellSize  = 1024                    // шифртекст на проводе

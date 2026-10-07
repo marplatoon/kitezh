@@ -12,7 +12,7 @@ import (
 
 // runServer - режим listen: цель сама последний хоп цепочки.
 // Чатимся с тем, чья цепочка первой прислала DATA; остальные игнорируем
-func runServer(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, addr string) error {
+func runServer(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, addr, forward string) error {
 	ln, err := listenUTLS(addr)
 	if err != nil {
 		return err
@@ -24,7 +24,7 @@ func runServer(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, addr stri
 	done := make(chan struct{})
 	var once sync.Once
 
-	cfg := circuitCfg{cs: cs, kp: kp}
+	cfg := circuitCfg{cs: cs, kp: kp, forward: forward}
 	cfg.onData = func(c *circuit, data []byte) {
 		if active.CompareAndSwap(nil, c) {
 			go sendLines(c, in)
@@ -60,7 +60,7 @@ func sendLines(c *circuit, in *bufio.Reader) {
 			fmt.Printf("Слишком длинное сообщение (%d байт, максимум %d)\n", len(text), relCap)
 			continue
 		}
-		if err := c.reply(rcData, []byte(text)); err != nil {
+		if err := c.reply(rcData, 0, []byte(text)); err != nil {
 			return
 		}
 	}

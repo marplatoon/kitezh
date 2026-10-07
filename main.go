@@ -16,6 +16,8 @@ func main() {
 	addr := flag.String("addr", "", "ip:порт: для listen/relay адрес прослушивания (по умолчанию :9000), для dial адрес назначения")
 	targetKeyHex := flag.String("targetkey", "", "только для dial: публичный ключ цели (hex, строка 'Публичный ключ' у неё в логе); если ключ в хендшейке другой - рвём соединение")
 	allowStr := flag.String("allow", "", "только для relay: список целей через запятую (ip:порт,ip:порт), к которым релей вообще согласен подключаться; без флага релей открытый")
+	forwardAddr := flag.String("forward", "", "только для listen: ip:порт локального сервиса, куда ведут потоки; без флага потоки выключены")
+	localAddr := flag.String("local", "", "только для dial: локальный ip:порт, который становится TCP-потоком через цепочку (127.0.0.1:1080); без флага - чат")
 	flag.Parse()
 
 	// режим проверяем ДО загрузки ключа: опечатка не должна создавать файл ключа
@@ -62,6 +64,15 @@ func main() {
 		fmt.Println("Внимание: -allow не задан, релей открытый (пустит к любой цели)")
 	}
 
+	if *forwardAddr != "" && *mode != "listen" {
+		fmt.Println("-forward работает только с -mode listen")
+		return
+	}
+	if *localAddr != "" && *mode != "dial" {
+		fmt.Println("-local работает только с -mode dial")
+		return
+	}
+
 	if *targetKeyHex != "" && *mode != "dial" {
 		fmt.Println("-targetkey работает только с -mode dial")
 		return
@@ -105,9 +116,9 @@ func main() {
 	in := newStdin()
 	switch *mode {
 	case "listen":
-		err = runServer(cs, staticKeypair, in, *addr)
+		err = runServer(cs, staticKeypair, in, *addr, *forwardAddr)
 	case "dial":
-		err = runClient(cs, staticKeypair, in, hops, *addr, targetKey)
+		err = runClient(cs, staticKeypair, in, hops, *addr, targetKey, *localAddr)
 	case "relay":
 		err = runRelay(cs, staticKeypair, *addr, allow)
 	}

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/flynn/noise"
@@ -16,13 +17,19 @@ import (
 // clientCircuit - цепочка глазами клиента: линк до первого хопа
 // и ключи каждого хопа по порядку
 type clientCircuit struct {
-	link peer
-	hops []*hop
+	link    peer
+	hops    []*hop
+	wmu     sync.Mutex // sendTo зовут из многих горутин, гамма требует порядка
+	smu     sync.Mutex // streams
+	streams map[uint16]*clientStream
+	nextID  uint16
 }
 
 // sendTo шлёт ячейку хопу k: слои накладываем от k до первого
-func (c *clientCircuit) sendTo(k int, cmd byte, data []byte) error {
-	b, err := c.hops[k].build(cmd, data)
+func (c *clientCircuit) sendTo(k int, cmd byte, stream uint16, data []byte) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	b, err := c.hops[k].build(cmd, stream, data)
 	if err != nil {
 		return err
 	}
@@ -33,21 +40,21 @@ func (c *clientCircuit) sendTo(k int, cmd byte, data []byte) error {
 }
 
 // recv читает ячейку и снимает слои, пока кто-то из хопов её не узнает
-func (c *clientCircuit) recv() (from int, cmd byte, data []byte, err error) {
+func (c *clientCircuit) recv() (from int, cmd byte, stream uint16, data []byte, err error) {
 	typ, b, err := recvCmd(c.link)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, nil, err
 	}
 	if typ != cmdRelay || len(b) != cellCap {
-		return 0, 0, nil, errors.New("плохая ячейка")
+		return 0, 0, 0, nil, errors.New("плохая ячейка")
 	}
 	for i, h := range c.hops {
 		h.back.XORKeyStream(b, b)
-		if cmd, data, ok := h.open(b); ok {
-			return i, cmd, data, nil
+		if cmd, stream, data, ok := h.open(b); ok {
+			return i, cmd, stream, data, nil
 		}
 	}
-	return 0, 0, nil, errors.New("ячейку не узнал ни один хоп")
+	return 0, 0, 0, nil, errors.New("ячейку не узнал ни один хоп")
 }
 
 // extend продлевает цепочку от последнего хопа до addr (ключ key закреплён)
@@ -61,10 +68,10 @@ func (c *clientCircuit) extend(cs noise.CipherSuite, addr string, key []byte) er
 		return err
 	}
 	last := len(c.hops) - 1
-	if err := c.sendTo(last, rcExtend, ext); err != nil {
+	if err := c.sendTo(last, rcExtend, 0, ext); err != nil {
 		return err
 	}
-	from, cmd, data, err := c.recv()
+	from, cmd, _, data, err := c.recv()
 	if err != nil {
 		return err
 	}
@@ -142,12 +149,15 @@ func openCircuit(cs noise.CipherSuite, kp noise.DHKey, conn net.Conn, hops []rel
 }
 
 // runClient - режим dial: строим цепочку и болтаем с целью
-func runClient(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops []relayHop, target string, targetKey []byte) error {
+func runClient(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops []relayHop, target string, targetKey []byte, local string) error {
 	c, err := buildCircuit(cs, kp, hops, target, targetKey)
 	if err != nil {
 		return err
 	}
 	defer c.link.conn.Close()
+	if local != "" {
+		return c.forward(local)
+	}
 	return c.chat(in)
 }
 
@@ -190,12 +200,12 @@ func (c *clientCircuit) chat(in *bufio.Reader) error {
 				fmt.Printf("Слишком длинное сообщение (%d байт, максимум %d)\n", len(text), relCap)
 				continue
 			}
-			if err := c.sendTo(last, rcData, []byte(text)); err != nil {
+			if err := c.sendTo(last, rcData, 0, []byte(text)); err != nil {
 				return err
 			}
 			keep.Reset(keepGap())
 		case <-keep.C:
-			if err := c.sendTo(last, rcDrop, nil); err != nil {
+			if err := c.sendTo(last, rcDrop, 0, nil); err != nil {
 				return err
 			}
 			keep.Reset(keepGap())
@@ -213,7 +223,7 @@ func (c *clientCircuit) chat(in *bufio.Reader) error {
 
 func (c *clientCircuit) readLoop(last int) error {
 	for {
-		from, cmd, data, err := c.recv()
+		from, cmd, _, data, err := c.recv()
 		if err != nil {
 			fmt.Println("\nСоединение закрыто:", err)
 			if errors.Is(err, io.EOF) {

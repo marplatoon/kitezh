@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -12,27 +13,33 @@ import (
 
 // команды внутри relay-ячейки (не путать с cmd* линка)
 const (
-	rcExtend   byte = 1 // продлить цепочку: адрес, ключ хопа, msg1
-	rcExtended byte = 2 // ответ на EXTEND: msg2
-	rcData     byte = 3
-	rcError    byte = 4 // текст ошибки
-	rcDrop     byte = 5
+	rcExtend    byte = 1 // продлить цепочку: адрес, ключ хопа, msg1
+	rcExtended  byte = 2 // ответ на EXTEND: msg2
+	rcData      byte = 3
+	rcError     byte = 4 // текст ошибки
+	rcDrop      byte = 5
+	rcBegin     byte = 6 // открыть поток, адрес не передаём
+	rcConnected byte = 7
+	rcEnd       byte = 8 // закрыть поток, в данных может быть причина
 )
 
 // circuitCfg - что узлу нужно знать про себя
 type circuitCfg struct {
-	cs     noise.CipherSuite
-	kp     noise.DHKey
-	allow  map[netip.AddrPort]bool
-	onData func(c *circuit, data []byte) // nil = узел не конечный
+	cs      noise.CipherSuite
+	kp      noise.DHKey
+	allow   map[netip.AddrPort]bool
+	onData  func(c *circuit, data []byte) // nil = узел не конечный
+	forward string                        // куда вести потоки, "" = потоки выключены
 }
 
 type circuit struct {
-	cfg circuitCfg
-	in  peer
-	hop *hop
-	out *peer      // следующий узел, nil пока не продлили
-	mu  sync.Mutex // в in пишут два цикла
+	cfg     circuitCfg
+	in      peer
+	hop     *hop
+	out     *peer      // следующий узел, nil пока не продлили
+	mu      sync.Mutex // в in пишут два цикла
+	smu     sync.Mutex // streams
+	streams map[uint16]net.Conn
 }
 
 // EXTEND: [len addr 1][addr][ключ хопа 32][msg1 хендшейка хопа]
@@ -105,6 +112,7 @@ func (c *circuit) create() error {
 // run - цикл "вперёд": снимаем свой слой и решаем, нам это или дальше
 func (c *circuit) run() {
 	defer c.in.conn.Close()
+	defer c.closeAll()
 	defer func() {
 		if c.out != nil {
 			c.out.conn.Close()
@@ -122,10 +130,10 @@ func (c *circuit) run() {
 			return
 		}
 		c.hop.fwd.XORKeyStream(body, body)
-		cmd, data, ok := c.hop.open(body)
+		cmd, stream, data, ok := c.hop.open(body)
 		switch {
 		case ok:
-			if err := c.handle(cmd, data); err != nil {
+			if err := c.handle(cmd, stream, data); err != nil {
 				fmt.Println("Цепочка:", err)
 				return
 			}
@@ -141,15 +149,23 @@ func (c *circuit) run() {
 	}
 }
 
-func (c *circuit) handle(cmd byte, data []byte) error {
+func (c *circuit) handle(cmd byte, stream uint16, data []byte) error {
 	switch cmd {
 	case rcExtend:
 		return c.extend(data)
 	case rcData:
+		if stream != 0 {
+			return c.streamData(stream, data)
+		}
 		if c.cfg.onData == nil {
 			return errors.New("DATA на промежуточном узле")
 		}
 		c.cfg.onData(c, data)
+		return nil
+	case rcBegin:
+		return c.beginStream(stream)
+	case rcEnd:
+		c.dropStream(stream)
 		return nil
 	case rcDrop:
 		return nil
@@ -169,7 +185,7 @@ func (c *circuit) extend(d []byte) error {
 	}
 	fail := func(why string, err error) error {
 		fmt.Println("Цепочка: EXTEND к", addr, "не вышел:", why, err)
-		return c.reply(rcError, []byte(why))
+		return c.reply(rcError, 0, []byte(why))
 	}
 	if c.cfg.allow != nil && !targetAllowed(c.cfg.allow, addr) {
 		return fail("адрес не разрешён", nil)
@@ -200,7 +216,7 @@ func (c *circuit) extend(d []byte) error {
 
 	c.out = &outp
 	go c.pumpBack(outp)
-	return c.reply(rcExtended, msg2)
+	return c.reply(rcExtended, 0, msg2)
 }
 
 // pumpBack - цикл "назад": ячейка от следующего узла, навешиваем слой
@@ -228,8 +244,8 @@ func (c *circuit) sendBack(body []byte) error {
 }
 
 // reply - ячейка от этого хопа клиенту
-func (c *circuit) reply(cmd byte, data []byte) error {
-	b, err := c.hop.build(cmd, data)
+func (c *circuit) reply(cmd byte, stream uint16, data []byte) error {
+	b, err := c.hop.build(cmd, stream, data)
 	if err != nil {
 		return err
 	}

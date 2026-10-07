@@ -12,9 +12,9 @@ import (
 )
 
 // тело relay-ячейки ровно cellCap байт:
-// [recognized 2][digest 4][cmd 1][len 2][данные][нули]
+// [recognized 2][digest 4][cmd 1][stream 2][len 2][данные][нули]
 const (
-	relHdr = 9
+	relHdr = 11
 	relCap = cellCap - relHdr
 )
 
@@ -56,13 +56,14 @@ func (h *hop) digest(b []byte) [4]byte {
 }
 
 // build собирает открытое тело ячейки для этого хопа, слоёв ещё нет
-func (h *hop) build(cmd byte, data []byte) ([]byte, error) {
+func (h *hop) build(cmd byte, stream uint16, data []byte) ([]byte, error) {
 	if len(data) > relCap {
 		return nil, errFrameTooLarge
 	}
 	b := make([]byte, cellCap) // нули = паддинг и recognized
 	b[6] = cmd
-	binary.BigEndian.PutUint16(b[7:9], uint16(len(data)))
+	binary.BigEndian.PutUint16(b[7:9], stream)
+	binary.BigEndian.PutUint16(b[9:11], uint16(len(data)))
 	copy(b[relHdr:], data)
 	d := h.digest(b)
 	copy(b[2:6], d[:])
@@ -70,17 +71,17 @@ func (h *hop) build(cmd byte, data []byte) ([]byte, error) {
 }
 
 // open проверяет, что тело (после снятия слоя) адресовано этому хопу
-func (h *hop) open(b []byte) (cmd byte, data []byte, ok bool) {
+func (h *hop) open(b []byte) (cmd byte, stream uint16, data []byte, ok bool) {
 	if b[0] != 0 || b[1] != 0 {
-		return 0, nil, false
+		return 0, 0, nil, false
 	}
 	d := h.digest(b)
 	if subtle.ConstantTimeCompare(b[2:6], d[:]) != 1 {
-		return 0, nil, false
+		return 0, 0, nil, false
 	}
-	n := int(binary.BigEndian.Uint16(b[7:9]))
+	n := int(binary.BigEndian.Uint16(b[9:11]))
 	if n > relCap {
-		return 0, nil, false
+		return 0, 0, nil, false
 	}
-	return b[6], b[relHdr : relHdr+n], true
+	return b[6], binary.BigEndian.Uint16(b[7:9]), b[relHdr : relHdr+n], true
 }

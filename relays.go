@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"net/netip"
 	"os"
 	"strings"
@@ -60,4 +62,31 @@ func parseRelaysFile(path string) ([]relayHop, error) {
 		return nil, fmt.Errorf("%s: ни одного релея", path)
 	}
 	return hops, nil
+}
+
+// pickHops берёт n случайных разных пиров из таблицы. Адрес цели выкидываем ибо цель не должна быть и релеем в своей же цепочке
+func pickHops(table []relayHop, n int, target string) ([]relayHop, error) {
+	tAP, tErr := netip.ParseAddrPort(target)
+
+	var pool []relayHop
+	for _, p := range table {
+		if tErr == nil && p.addr == tAP.String() {
+			continue
+		}
+		pool = append(pool, p)
+	}
+	if len(pool) < n {
+		return nil, fmt.Errorf("в таблице %d подходящих пиров, а нужно %d", len(pool), n)
+	}
+
+	// частичный Фишер-Йетс: n раз меняем текущий элемент со случайным из хвоста
+	for i := 0; i < n; i++ {
+		j, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool)-i)))
+		if err != nil {
+			return nil, err
+		}
+		k := i + int(j.Int64())
+		pool[i], pool[k] = pool[k], pool[i]
+	}
+	return pool[:n], nil
 }

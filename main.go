@@ -12,12 +12,13 @@ import (
 func main() {
 	mode := flag.String("mode", "listen", "listen, dial или relay")
 	keyPath := flag.String("key", "node.key", "путь к файлу с приватным ключом")
-	relaysFile := flag.String("relays", "", "только для dial: файл со списком релеев цепочки (строка \"ip:порт ключ\" на релей, порядок = порядок хопов)")
+	relaysFile := flag.String("relays", "", "только для dial: таблица пиров, строка \"ip:порт ключ\" на пира; хопы цепочки выбираются из неё случайно (-hops)")
 	addr := flag.String("addr", "", "ip:порт: для listen/relay адрес прослушивания (по умолчанию :9000), для dial адрес назначения")
 	targetKeyHex := flag.String("targetkey", "", "только для dial: публичный ключ цели (hex, строка 'Публичный ключ' у неё в логе); если ключ в хендшейке другой - рвём соединение")
 	allowStr := flag.String("allow", "", "только для relay: список целей через запятую (ip:порт,ip:порт), к которым релей вообще согласен подключаться; без флага релей открытый")
 	forwardAddr := flag.String("forward", "", "только для listen: ip:порт локального сервиса, куда ведут потоки; без флага потоки выключены")
 	localAddr := flag.String("local", "", "только для dial: локальный ip:порт, который становится TCP-потоком через цепочку (127.0.0.1:1080); без флага - чат")
+	hopsN := flag.Int("hops", 2, "только для dial: сколько случайных релеев из таблицы брать в цепочку")
 	flag.Parse()
 
 	// режим проверяем ДО загрузки ключа: опечатка не должна создавать файл ключа
@@ -37,14 +38,14 @@ func main() {
 		fmt.Println("-relays работает только с -mode dial")
 		return
 	}
-	var hops []relayHop
+	var table []relayHop
 	if *relaysFile != "" {
 		h, hErr := parseRelaysFile(*relaysFile)
 		if hErr != nil {
 			fmt.Println("-relays:", hErr)
 			return
 		}
-		hops = h
+		table = h
 	}
 
 	if *allowStr != "" && *mode != "relay" {
@@ -97,6 +98,23 @@ func main() {
 			return
 		}
 		*addr = ":9000"
+	}
+
+	var hops []relayHop
+	if *mode == "dial" {
+		if *hopsN < 1 {
+			fmt.Println("-hops должен быть хотя бы 1")
+			return
+		}
+		h, pErr := pickHops(table, *hopsN, *addr)
+		if pErr != nil {
+			fmt.Println("-relays:", pErr)
+			return
+		}
+		hops = h
+		for i, x := range hops {
+			fmt.Printf("Хоп %d выбран: %s\n", i+1, x.addr)
+		}
 	}
 
 	cs := newCipherSuite()

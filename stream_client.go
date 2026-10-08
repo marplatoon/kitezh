@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// поток глазами клиента: локальный сокет и ответ на BEGIN
+// поток глазами клиента: сокет с очередью и окном (flow) и ответ на BEGIN
 type clientStream struct {
-	conn  net.Conn
+	f     *flow
 	ready chan error // nil = цель подключилась, иначе причина отказа
 }
 
@@ -32,7 +32,7 @@ func (c *clientCircuit) addStream(conn net.Conn) (uint16, *clientStream) {
 			break
 		}
 	}
-	s := &clientStream{conn: conn, ready: make(chan error, 1)}
+	s := &clientStream{f: newFlow(conn), ready: make(chan error, 1)}
 	c.streams[c.nextID] = s
 	return c.nextID, s
 }
@@ -50,7 +50,7 @@ func (c *clientCircuit) dropStream(id uint16) bool {
 	delete(c.streams, id)
 	c.smu.Unlock()
 	if ok {
-		s.conn.Close()
+		s.f.close()
 	}
 	return ok
 }
@@ -82,11 +82,24 @@ func (c *clientCircuit) openStream(last int, conn net.Conn) {
 		return
 	}
 
+	// писатель стартует только после CONNECTED: раньше писать нечего
+	go s.f.writeLoop(
+		func() error { return c.sendTo(last, rcSendme, id, nil) },
+		func(notify bool) {
+			if c.dropStream(id) && notify {
+				c.sendTo(last, rcEnd, id, nil)
+			}
+		},
+	)
+
 	// пока не пришёл CONNECTED, из сокета ничего не читаем и не шлём
 	buf := make([]byte, relCap)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
+			if !s.f.acquire() {
+				return
+			}
 			if c.sendTo(last, rcData, id, buf[:n]) != nil {
 				c.dropStream(id)
 				return
@@ -101,7 +114,9 @@ func (c *clientCircuit) openStream(last int, conn net.Conn) {
 	}
 }
 
-// streamLoop - единственный, кто читает ячейки от цели, раскладывает по потокам
+// streamLoop - единственный, кто читает ячейки от цели, раскладывает по потокам.
+// В сокет сам не пишет, только кладёт в очередь потока, поэтому медленный
+// поток не задерживает остальные
 func (c *clientCircuit) streamLoop(last int) error {
 	for {
 		from, cmd, stream, data, err := c.recv()
@@ -122,17 +137,22 @@ func (c *clientCircuit) streamLoop(last int) error {
 			default:
 			}
 		case rcData:
-			if _, err := s.conn.Write(data); err != nil {
+			if !s.f.push(data) {
 				if c.dropStream(stream) {
-					c.sendTo(last, rcEnd, stream, nil)
+					c.sendTo(last, rcEnd, stream, []byte("окно превышено"))
 				}
 			}
+		case rcSendme:
+			s.f.release(flowAck)
 		case rcEnd:
 			select {
 			case s.ready <- errors.New(string(data)):
 			default:
 			}
-			c.dropStream(stream)
+			// данные перед END сначала дописываются в сокет
+			if !s.f.finish() {
+				c.dropStream(stream)
+			}
 		}
 	}
 }

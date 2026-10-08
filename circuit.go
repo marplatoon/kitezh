@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -21,6 +20,7 @@ const (
 	rcBegin     byte = 6 // открыть поток, адрес не передаём
 	rcConnected byte = 7
 	rcEnd       byte = 8 // закрыть поток, в данных может быть причина
+	rcSendme    byte = 9 // подтверждение: получатель записал flowAck ячеек потока
 )
 
 // circuitCfg - что узлу нужно знать про себя
@@ -39,7 +39,7 @@ type circuit struct {
 	out     *peer      // следующий узел, nil пока не продлили
 	mu      sync.Mutex // в in пишут два цикла
 	smu     sync.Mutex // streams
-	streams map[uint16]net.Conn
+	streams map[uint16]*flow
 }
 
 // EXTEND: [len addr 1][addr][ключ хопа 32][msg1 хендшейка хопа]
@@ -165,7 +165,10 @@ func (c *circuit) handle(cmd byte, stream uint16, data []byte) error {
 	case rcBegin:
 		return c.beginStream(stream)
 	case rcEnd:
-		c.dropStream(stream)
+		c.endStream(stream)
+		return nil
+	case rcSendme:
+		c.streamSendme(stream)
 		return nil
 	case rcDrop:
 		return nil

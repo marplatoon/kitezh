@@ -149,14 +149,17 @@ func openCircuit(cs noise.CipherSuite, kp noise.DHKey, conn net.Conn, hops []rel
 }
 
 // runClient - режим dial: строим цепочку и болтаем с целью
-func runClient(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops []relayHop, target string, targetKey []byte, local string) error {
+func runClient(cs noise.CipherSuite, kp noise.DHKey, in *bufio.Reader, hops, table []relayHop, hopsN, poolN int, target string, targetKey []byte, local string) error {
 	c, err := buildCircuit(cs, kp, hops, target, targetKey)
 	if err != nil {
 		return err
 	}
 	defer c.link.conn.Close()
 	if local != "" {
-		return c.forward(local)
+		p := newPool(cs, kp, table, hopsN, target, targetKey, poolN)
+		p.add(c) // первая цепочка уже построена
+		go p.maintain()
+		return p.serve(local)
 	}
 	return c.chat(in)
 }

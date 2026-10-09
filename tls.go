@@ -62,7 +62,14 @@ func listenUTLS(addr string) (net.Listener, error) {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
 	}
-	return tls.Listen("tcp", addr, cfg)
+	ln, err := tls.Listen("tcp", addr, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if shapeProf == nil {
+		return ln, nil
+	}
+	return shapedListener{ln, shapeProf}, nil
 }
 
 // dialUTLS - TCP + TLS-хендшейк с ClientHello, побайтово имитирующим
@@ -94,5 +101,8 @@ func dialUTLS(addr string) (net.Conn, error) {
 		return nil, err
 	}
 	rawConn.SetDeadline(time.Time{})
+	if shapeProf != nil {
+		return newShaped(uConn, shapeProf), nil
+	}
 	return uConn, nil
 }

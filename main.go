@@ -19,6 +19,8 @@ func main() {
 	forwardAddr := flag.String("forward", "", "только для listen: ip:порт локального сервиса, куда ведут потоки; без флага потоки выключены")
 	localAddr := flag.String("local", "", "только для dial: локальный ip:порт, который становится TCP-потоком через цепочку (127.0.0.1:1080); без флага - чат")
 	hopsN := flag.Int("hops", 2, "только для dial: сколько случайных релеев из таблицы брать в цепочку")
+	poolN := flag.Int("pool", 3, "только для dial -local: сколько готовых цепочек держать в пуле")
+	shapeArg := flag.String("shape", "", "профиль формы TLS-записей: пусто = встроенный, off = выключить, иначе путь к файлу со строками 'размер вес'")
 	flag.Parse()
 
 	// режим проверяем ДО загрузки ключа: опечатка не должна создавать файл ключа
@@ -28,6 +30,13 @@ func main() {
 		fmt.Println("Неправильный режим. Нужно 'listen', 'dial' или 'relay'.")
 		return
 	}
+
+	prof, shErr := loadShape(*shapeArg)
+	if shErr != nil {
+		fmt.Println("-shape:", shErr)
+		return
+	}
+	shapeProf = prof
 
 	if *mode == "dial" && *relaysFile == "" {
 		fmt.Println("Режиму dial нужен -relays")
@@ -106,6 +115,10 @@ func main() {
 			fmt.Println("-hops должен быть хотя бы 1")
 			return
 		}
+		if *poolN < 1 {
+			fmt.Println("-pool должен быть хотя бы 1")
+			return
+		}
 		h, pErr := pickHops(table, *hopsN, *addr)
 		if pErr != nil {
 			fmt.Println("-relays:", pErr)
@@ -136,7 +149,7 @@ func main() {
 	case "listen":
 		err = runServer(cs, staticKeypair, in, *addr, *forwardAddr)
 	case "dial":
-		err = runClient(cs, staticKeypair, in, hops, *addr, targetKey, *localAddr)
+		err = runClient(cs, staticKeypair, in, hops, table, *hopsN, *poolN, *addr, targetKey, *localAddr)
 	case "relay":
 		err = runRelay(cs, staticKeypair, *addr, allow)
 	}

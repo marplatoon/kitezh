@@ -2,11 +2,35 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"net"
 
 	"github.com/flynn/noise"
 )
+
+// Границы случайного паддинга (байт) в payload каждого из трёх сообщений Noise_XX
+const (
+	padMin1, padMax1 = 120, 420  // -> e (открытым текстом)
+	padMin2, padMax2 = 300, 1200 // <- e, ee, s, es (зашифрован)
+	padMin3, padMax3 = 100, 400  // -> s, se (зашифрован)
+)
+
+// randomPad возвращает случайные байты случайной длины из [lo, hi].
+// Нули не годятся: msg1 уходит открытым текстом, и ряд нулей виден сразу.
+// Случайные байты выглядят так же, как эфемерный ключ рядом с ними
+func randomPad(lo, hi int) ([]byte, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(hi-lo+1)))
+	if err != nil {
+		return nil, err
+	}
+	b := make([]byte, lo+int(n.Int64()))
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
 
 // handshakeServer выполняет ответную (responder) сторону Noise_XX:
 //   <- e
@@ -42,7 +66,11 @@ func handshakeServer(conn net.Conn, cs noise.CipherSuite, staticKeypair noise.DH
 	}
 	fmt.Println("Получено handshake-сообщение 1 (-> e), байт:", len(msg1))
 
-	msg2, _, _, err := hs.WriteMessage(nil, nil)
+	pad2, err := randomPad(padMin2, padMax2)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	msg2, _, _, err := hs.WriteMessage(nil, pad2)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -84,7 +112,11 @@ func handshakeClient(conn net.Conn, cs noise.CipherSuite, staticKeypair noise.DH
 		return nil, nil, nil, err
 	}
 
-	msg1, _, _, err := hs.WriteMessage(nil, nil)
+	pad1, err := randomPad(padMin1, padMax1)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	msg1, _, _, err := hs.WriteMessage(nil, pad1)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -110,7 +142,11 @@ func handshakeClient(conn net.Conn, cs noise.CipherSuite, staticKeypair noise.DH
 		return nil, nil, nil, fmt.Errorf("ключ собеседника не совпал с закреплённым: пришёл %x, ждали %x", hs.PeerStatic(), expectedPeer)
 	}
 
-	msg3, sendCS, recvCS, err := hs.WriteMessage(nil, nil)
+	pad3, err := randomPad(padMin3, padMax3)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	msg3, sendCS, recvCS, err := hs.WriteMessage(nil, pad3)
 	if err != nil {
 		return nil, nil, nil, err
 	}
